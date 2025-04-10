@@ -2,14 +2,17 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InlineQueryResultArticle, InputTextMessageContent
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from datetime import datetime, timedelta
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from database import init_db, add_sale
+import re
 from config import BOT_TOKEN
+from database import get_sales_by_date  
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -83,6 +86,58 @@ def create_calendar(year=None, month=None):
     )
     
     return keyboard.as_markup()
+
+@dp.inline_query()
+async def handle_inline_sales(query: types.InlineQuery):
+    # Пример: #продажа/10.04.25/@Verona/10:00/7000р
+    pattern = r"#(\w+)/(\d{2}\.\d{2}\.\d{2})/(@\w+)/(\d{2}:\d{2})/([\d.,]+р?)"
+    match = re.search(pattern, query.query)
+    
+    if not match:
+        # Используем answer для inline-запросов вместо reply
+        await query.answer(
+            results=[],
+            switch_pm_text="Неверный формат. Пример: #продажа/10.04.25/@username/10:00/7000р",
+            switch_pm_parameter="help"
+        )
+        return
+
+    sale_type, date, user_tag, time, amount = match.groups()
+
+    # Добавляем в базу данных
+    add_sale(
+        sale_type=sale_type,
+        date=date,
+        user_tag=user_tag,
+        time=time,
+        amount=amount,
+        user_id=query.from_user.id
+    )
+
+    # Создаем результат для inline-запроса
+    result = types.InlineQueryResultArticle(
+        id="1",
+        title=f"Продажа: {amount}",
+        input_message_content=types.InputTextMessageContent(
+            message_text=(
+                f"<b>Добавлено:</b>\n"
+                f"Тип: {sale_type}\n"
+                f"Дата: {date}\n"
+                f"Пользователь: {user_tag}\n"
+                f"Время: {time}\n"
+                f"Сумма: {amount}\n"
+                f"Добавил: {query.from_user.full_name}"
+            ),
+            parse_mode=ParseMode.HTML
+        ),
+        description=f"{sale_type} {date} {user_tag} {time}"
+    )
+
+    await query.answer(
+        results=[result],
+        cache_time=0
+    )
+
 
 # Обработчик команды /start
 @dp.message(Command("start"))
@@ -162,9 +217,10 @@ async def back_to_menu_handler(callback_query: types.CallbackQuery, state: FSMCo
         reply_markup=builder.as_markup()
     )
     await callback_query.answer()
+    
 
 # Обработчик взаимодействий с календарем
-@dp.callback_query(lambda c: c.data.startswith(('calendar_day_', 'calendar_prev_', 'calendar_next_', 'calendar_today')))
+@dp.callback_query(lambda c: c.data.startswith('calendar_day_'))
 async def process_calendar(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data
     
@@ -172,33 +228,56 @@ async def process_calendar(callback_query: types.CallbackQuery, state: FSMContex
         # Пользователь выбрал дату
         date_str = data.split('_')[2]
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        formatted_date = selected_date.strftime('%d.%m.%y')  # Формат 10.04.25
         
         # Получаем сохраненное действие
         state_data = await state.get_data()
-        action = state_data.get('action', 'действие')
+        action = state_data.get('action')
         
-        await callback_query.message.answer(
-            f"Вы выбрали {action} на дату: {selected_date.strftime('%d.%m.%Y')}"
-        )
+        if action == 'sales':
+            # Получаем данные о продажах за выбранную дату
+            sales = get_sales_by_date(formatted_date, 'продажа')
+            
+            if not sales:
+                await callback_query.message.answer(
+                    f"Нет данных о продажах за {formatted_date}"
+                )
+            else:
+                # Формируем отчет
+                report = f"Продажи за {formatted_date}\n\n"
+                total = 0
+                
+                for sale in sales:
+                    user_tag = sale[2]  # user_tag
+                    time = sale[3]     # time
+                    amount = sale[4]    # amount
+                    report += f"{user_tag}/{time}/{amount}\n"
+                    
+                    # Суммируем продажи
+                    try:
+                        amount_num = float(amount.replace('р', '').replace(',', '').strip())
+                        total += amount_num
+                    except:
+                        pass
+                
+                report += f"\nСумма продаж: {int(total)}р"
+                
+                await callback_query.message.answer(report)
+        
+        elif action == 'purchase':
+            # Аналогичная логика для закупок
+            pass
+        
+        elif action == 'report':
+            # Логика для отчетности
+            pass
+        
         await state.clear()
-        
-    elif data.startswith('calendar_prev_') or data.startswith('calendar_next_'):
-        # Переключение месяцев
-        _, _, year, month = data.split('_')
-        await callback_query.message.edit_reply_markup(
-            reply_markup=create_calendar(int(year), int(month)))
-        
-    elif data == 'calendar_today':
-        # Возврат к текущему месяцу
-        today = datetime.now()
-        await callback_query.message.edit_reфly_markup(
-            reply_markup=create_calendar(today.year, today.month))
-    
-    await callback_query.answer()
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     import asyncio
+    init_db()
     asyncio.run(main())
