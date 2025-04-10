@@ -183,41 +183,103 @@ async def send_welcome(message: types.Message):
 async def process_callback_button(callback_query: types.CallbackQuery, state: FSMContext):
     await callback_query.answer()
     
-    # Сохраняем выбранное действие в состоянии
     await state.update_data(action=callback_query.data)
     
-    # Отправляем календарь
+    today = datetime.now().date()
+    formatted_today = today.strftime('%d.%m.%y')
+
+    if callback_query.data == 'sales':
+        sales = get_sales_by_date(formatted_today, 'продажа')
+        if sales:
+            report = f"Продажи за {formatted_today}\n\n"
+            total = 0
+            for sale in sales:
+                user_tag = sale[2]
+                time = sale[3]
+                amount = sale[4]
+                report += f"{user_tag}/{time}/{amount}\n"
+                try:
+                    total += float(amount.replace('р', '').replace(',', '').strip())
+                except:
+                    pass
+            report += f"\nСумма продаж: {int(total)}р"
+            await callback_query.message.answer(report)
+        else:
+            await callback_query.message.answer("Сегодня пока нет данных о продажах.")
+
+    elif callback_query.data == 'purchase':
+        purchases = get_sales_by_date(formatted_today, 'закупка')
+        if purchases:
+            report = f"Покупка рекламы за {formatted_today}\n\n"
+            total = 0
+            for purchase in purchases:
+                user_tag = purchase[2]
+                time = purchase[3]
+                amount = purchase[4]
+                report += f"{user_tag}/{time}/{amount}\n"
+                try:
+                    total += float(amount.replace('р', '').replace(',', '').strip())
+                except:
+                    pass
+            report += f"\nСумма покупки рекламы: {int(total)}р"
+            await callback_query.message.answer(report)
+        else:
+            await callback_query.message.answer("Сегодня пока нет данных о закупках.")
+
+    elif callback_query.data == 'report':
+        sales = get_sales_by_date(formatted_today, 'продажа')
+        purchases = get_sales_by_date(formatted_today, 'закупка')
+
+        total_sales = sum([
+            float(sale[4].replace('р', '').replace(',', '').strip())
+            for sale in sales
+            if sale[4]
+        ]) if sales else 0
+
+        total_purchases = sum([
+            float(purchase[4].replace('р', '').replace(',', '').strip())
+            for purchase in purchases
+            if purchase[4]
+        ]) if purchases else 0
+
+        admin_percent = round(total_sales * 0.15)
+        content_creator = 0  # пока пусто
+        card_fee = 100
+
+        day_total = int(total_sales - total_purchases - admin_percent - content_creator - card_fee)
+
+        # подсчет баланса по предыдущим дням
+        balance = 0
+        for day_offset in range(1, today.day):
+            prev_date = today.replace(day=day_offset)
+            prev_fmt = prev_date.strftime('%d.%m.%y')
+            prev_sales = get_sales_by_date(prev_fmt, 'продажа') or []
+            prev_purchases = get_sales_by_date(prev_fmt, 'закупка') or []
+
+            psum = sum([float(s[4].replace('р', '').replace(',', '').strip()) for s in prev_sales if s[4]])
+            bsum = sum([float(p[4].replace('р', '').replace(',', '').strip()) for p in prev_purchases if p[4]])
+            admin_cut = round(psum * 0.15)
+            prev_day_total = psum - bsum - admin_cut - 0 - 100  # контентщик = 0, карта = 100
+            balance += int(prev_day_total)
+
+        report = (
+            f"<b>Отчетность за {formatted_today}г</b>\n"
+            f"Сумма продаж : {int(total_sales)}р\n"
+            f"Покупка рекламы : {int(total_purchases)}р\n"
+            f"Процент админа : {admin_percent}р\n"
+            f"Контенщик : - \n"
+            f"Карта : - {card_fee}р\n\n"
+            f"<b>ИТОГ ДНЯ : {day_total}р</b>\n"
+            f"<b>Баланс: {balance}р</b>"
+        )
+
+        await callback_query.message.answer(report)
+
     await callback_query.message.answer(
-        f"Вы выбрали: {callback_query.data}. Теперь выберите дату:",
+        "Выберите дату для просмотра:",
         reply_markup=create_calendar()
     )
 
-# Обработчик кнопки "Вернуться в меню"
-@dp.callback_query(lambda c: c.data == 'back_to_menu')
-async def back_to_menu_handler(callback_query: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    
-    # Создаем инлайн-кнопки с нужным расположением
-    builder = InlineKeyboardBuilder()
-    
-    # Добавляем кнопки "Продажа" и "Закупка" в один ряд
-    builder.row(
-        InlineKeyboardButton(text="Продажа", callback_data="sales"),
-        InlineKeyboardButton(text="Закупка", callback_data="purchase")
-    )
-    
-    # Добавляем кнопку "Отчетность" в отдельный ряд
-    builder.row(
-        InlineKeyboardButton(text="Отчетность", callback_data="report")
-    )
-    
-    # Редактируем сообщение с календарем, возвращая меню
-    await callback_query.message.edit_text(
-        "Всю информацию по отчетности канала можно глянуть по кнопкам ниже👇",
-        reply_markup=builder.as_markup()
-    )
-    await callback_query.answer()
-    
 
 # Обработчик взаимодействий с календарем
 @dp.callback_query(lambda c: c.data.startswith('calendar_day_'))
@@ -244,7 +306,7 @@ async def process_calendar(callback_query: types.CallbackQuery, state: FSMContex
                 )
             else:
                 # Формируем отчет
-                report = f"Продажи за {formatted_date}\n\n"
+                report = f"Продажи за {formatted_date}г\n\n"
                 total = 0
                 
                 for sale in sales:
@@ -265,14 +327,112 @@ async def process_calendar(callback_query: types.CallbackQuery, state: FSMContex
                 await callback_query.message.answer(report)
         
         elif action == 'purchase':
-            # Аналогичная логика для закупок
-            pass
+            # Получаем данные о закупках за выбранную дату
+            purchases = get_sales_by_date(formatted_date, 'закупка')
+            
+            if not purchases:
+                await callback_query.message.answer(
+                    f"Нет данных о закупках за {formatted_date}"
+                )
+            else:
+                # Формируем отчет
+                report = f"Покупка рекламы за {formatted_date}г\n\n"
+                total = 0
+                
+                for purchase in purchases:
+                    user_tag = purchase[2]  # user_tag
+                    time = purchase[3]     # time
+                    amount = purchase[4]    # amount
+                    report += f"{user_tag}/{time}/{amount}\n"
+                    
+                    # Суммируем закупки
+                    try:
+                        amount_num = float(amount.replace('р', '').replace(',', '').strip())
+                        total += amount_num
+                    except:
+                        pass
+                
+                report += f"\nСумма покупки рекламы: {int(total)}р"
+                
+                await callback_query.message.answer(report)
         
         elif action == 'report':
-            # Логика для отчетности
-            pass
+            # Получаем данные о всех операциях за выбранную дату
+            sales = get_sales_by_date(formatted_date, 'продажа')
+            purchases = get_sales_by_date(formatted_date, 'закупка')
+            
+            total_sales = sum([
+                float(sale[4].replace('р', '').replace(',', '').strip())
+                for sale in sales if sale[4]
+            ]) if sales else 0
+
+            total_purchases = sum([
+                float(purchase[4].replace('р', '').replace(',', '').strip())
+                for purchase in purchases if purchase[4]
+            ]) if purchases else 0
+
+            admin_percent = round(total_sales * 0.15)
+            content_creator = 0  # Пока не задан
+            card_fee = 100
+
+            day_total = int(total_sales - total_purchases - admin_percent - content_creator - card_fee)
+
+            # Подсчет баланса за все предыдущие дни месяца
+            balance = 0
+            selected_day = selected_date.day
+            for day_offset in range(1, selected_day):
+                prev_date = selected_date.replace(day=day_offset)
+                prev_fmt = prev_date.strftime('%d.%m.%y')
+                prev_sales = get_sales_by_date(prev_fmt, 'продажа') or []
+                prev_purchases = get_sales_by_date(prev_fmt, 'закупка') or []
+
+                psum = sum([float(s[4].replace('р', '').replace(',', '').strip()) for s in prev_sales if s[4]])
+                bsum = sum([float(p[4].replace('р', '').replace(',', '').strip()) for p in prev_purchases if p[4]])
+                admin_cut = round(psum * 0.15)
+                prev_day_total = psum - bsum - admin_cut - 0 - 100
+                balance += int(prev_day_total)
+
+            balance += day_total
+
+            report = (
+                f"<b>Отчетность за {formatted_date}г</b>\n"
+                f"Сумма продаж : {int(total_sales)}р\n"
+                f"Покупка рекламы : {int(total_purchases)}р\n"
+                f"Процент админа : {admin_percent}р\n"
+                f"Контенщик : - \n"
+                f"Карта : - {card_fee}р\n\n"
+                f"<b>ИТОГ ДНЯ : {day_total}р</b>\n"
+                f"<b>Баланс: {balance}р</b>"
+            )
+
+            await callback_query.message.answer(report)
         
-        await state.clear()
+
+# Обработчик кнопки "Вернуться в меню"
+@dp.callback_query(lambda c: c.data == 'back_to_menu')
+async def back_to_menu_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    
+    # Создаем инлайн-кнопки с нужным расположением
+    builder = InlineKeyboardBuilder()
+    
+    # Добавляем кнопки "Продажа" и "Закупка" в один ряд
+    builder.row(
+        InlineKeyboardButton(text="Продажа", callback_data="sales"),
+        InlineKeyboardButton(text="Закупка", callback_data="purchase")
+    )
+    
+    # Добавляем кнопку "Отчетность" в отдельный ряд
+    builder.row(
+        InlineKeyboardButton(text="Отчетность", callback_data="report")
+    )
+    
+    # Редактируем сообщение с календарем, возвращая меню
+    await callback_query.message.edit_text(
+        "Всю информацию по отчетности канала можно глянуть по кнопкам ниже👇",
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
 
 async def main():
     await dp.start_polling(bot)
