@@ -20,7 +20,7 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Состояния для FSM (не обязательно, но полезно для расширения функционала)
+# Состояния для FSM
 class Form(StatesGroup):
     waiting_for_date = State()
 
@@ -75,6 +75,11 @@ def create_calendar(year=None, month=None):
         InlineKeyboardButton(text="⬅️", callback_data=f"calendar_prev_{prev_year}_{prev_month}"),
         InlineKeyboardButton(text="Сегодня", callback_data="calendar_today"),
         InlineKeyboardButton(text="➡️", callback_data=f"calendar_next_{next_year}_{next_month}")
+    )
+    
+    # Добавляем кнопку "Вернуться в меню"
+    keyboard.row(
+        InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="back_to_menu")
     )
     
     return keyboard.as_markup()
@@ -132,6 +137,32 @@ async def process_callback_button(callback_query: types.CallbackQuery, state: FS
         reply_markup=create_calendar()
     )
 
+# Обработчик кнопки "Вернуться в меню"
+@dp.callback_query(lambda c: c.data == 'back_to_menu')
+async def back_to_menu_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    
+    # Создаем инлайн-кнопки с нужным расположением
+    builder = InlineKeyboardBuilder()
+    
+    # Добавляем кнопки "Продажа" и "Закупка" в один ряд
+    builder.row(
+        InlineKeyboardButton(text="Продажа", callback_data="sales"),
+        InlineKeyboardButton(text="Закупка", callback_data="purchase")
+    )
+    
+    # Добавляем кнопку "Отчетность" в отдельный ряд
+    builder.row(
+        InlineKeyboardButton(text="Отчетность", callback_data="report")
+    )
+    
+    # Редактируем сообщение с календарем, возвращая меню
+    await callback_query.message.edit_text(
+        "Всю информацию по отчетности канала можно глянуть по кнопкам ниже👇",
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
+
 # Обработчик взаимодействий с календарем
 @dp.callback_query(lambda c: c.data.startswith(('calendar_day_', 'calendar_prev_', 'calendar_next_', 'calendar_today')))
 async def process_calendar(callback_query: types.CallbackQuery, state: FSMContext):
@@ -160,7 +191,7 @@ async def process_calendar(callback_query: types.CallbackQuery, state: FSMContex
     elif data == 'calendar_today':
         # Возврат к текущему месяцу
         today = datetime.now()
-        await callback_query.message.edit_reply_markup(
+        await callback_query.message.edit_reфly_markup(
             reply_markup=create_calendar(today.year, today.month))
     
     await callback_query.answer()
